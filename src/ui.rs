@@ -207,16 +207,21 @@ fn draw_subtitle(f: &mut Frame, area: Rect, mode: Mode) {
     } else {
         format!("random word · {}", mode.pool.label())
     };
-    let rule = Span::styled("──────", Style::new().fg(FAINT));
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            rule.clone(),
+    // The rules are decoration: they shrink to fit and go away entirely
+    // rather than let the label they frame be clipped in a narrow window.
+    let label = truncate(&label, area.width as usize);
+    let width = label.chars().count();
+    let rule = "─".repeat(((area.width as usize).saturating_sub(width + 4) / 2).min(6));
+    let spans = if rule.is_empty() {
+        vec![Span::styled(label, Style::new().fg(DIM))]
+    } else {
+        vec![
+            Span::styled(rule.clone(), Style::new().fg(FAINT)),
             Span::styled(format!("  {label}  "), Style::new().fg(DIM)),
-            rule,
-        ]))
-        .centered(),
-        area,
-    );
+            Span::styled(rule, Style::new().fg(FAINT)),
+        ]
+    };
+    f.render_widget(Paragraph::new(Line::from(spans)).centered(), area);
 }
 
 /// What a single tile is showing this frame.
@@ -1134,6 +1139,31 @@ mod tests {
         term.draw(|f| draw(f, game, anim, &Stats::default(), None, mode, now))
             .unwrap();
         rows(term.backend().buffer()).join("\n")
+    }
+
+    #[test]
+    fn the_subtitle_frames_the_longest_pool_name_evenly_at_any_width() {
+        let (game, anim, now) = won_longest_gloss();
+        for w in [MIN_W, MIN_W + 3, 46, 80] {
+            for pool in Pool::CYCLE {
+                let mode = Mode { daily: false, pool };
+                let screen = screen_in(mode, &game, &anim, now, w, 40);
+                let line = screen
+                    .lines()
+                    .find(|l| l.contains(pool.label()))
+                    .unwrap_or_else(|| panic!("{} missing at {w} wide", pool.label()))
+                    .trim();
+                assert!(
+                    line.chars().count() <= w as usize,
+                    "subtitle overruns {w} columns: [{line}]"
+                );
+                // The rules are decoration; they may vanish, but never leave a
+                // lopsided frame behind.
+                let lead = line.chars().take_while(|&c| c == '─').count();
+                let trail = line.chars().rev().take_while(|&c| c == '─').count();
+                assert_eq!(lead, trail, "lopsided rules at {w} wide: [{line}]");
+            }
+        }
     }
 
     #[test]

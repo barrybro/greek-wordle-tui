@@ -53,9 +53,10 @@ Greek layout that key types ψ, which works just as well.
 
 Statistics are kept in `$XDG_DATA_HOME/greek-wordle/stats`, or
 `~/.local/share/greek-wordle/stats`, a short `key=value` file you can read or
-delete to start over. A streak counts wins in a row across every game. In
-`--daily` mode each day's puzzle counts once, so replaying today's word after
-finishing it does not change anything.
+delete to start over — it also remembers which words you chose to play, so
+deleting it resets that to all of them. A streak counts wins in a row across
+every game. In `--daily` mode each day's puzzle counts once, so replaying
+today's word after finishing it does not change anything.
 
 ## Words
 
@@ -139,14 +140,15 @@ src/game.rs        scoring and board state
 src/ui.rs          tile grid, keyboard, status lines, drawn cell by cell
 src/anim.rs        flip, shake, bounce and spark timing
 src/theme.rs       palette and colour blending
-src/stats.rs       statistics and the file they persist in
+src/stats.rs       statistics, the chosen pool, and the file they persist in
 src/share.rs       result grid and OSC 52 clipboard copy
 src/main.rs        terminal setup, event loop, answer selection
 ```
 
 `cargo test` covers the scoring rules (including repeated letters, where
-Wordle's two-pass rule is easy to get wrong), the input normalization, and the
-integrity of the embedded word list.
+Wordle's two-pass rule is easy to get wrong), the input normalization, the
+integrity of the embedded word list, which words each pool admits, and that the
+screen still fits at the smallest window it claims to support.
 
 ## License
 
