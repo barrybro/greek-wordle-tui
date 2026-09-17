@@ -4,13 +4,22 @@
 
 """Extract 5-letter Greek words from the Pocket Greek dictionary into words.db.
 
-Source : KoineDictionary/app/src/main/assets/pocketGreekEntries.sqlite
-Output : data/words.db
+This ran once. `data/words.db` is committed and is what the game builds
+against, so nothing here is needed to build or play — the script is kept as the
+record of how that file was made, and to re-derive it if the dictionary gains
+words. It takes `--src` explicitly because the dictionary lives in its own
+project, which this repository does not depend on.
+
+    ./tools/build_words.py --src /path/to/pocketGreekEntries.sqlite
 
 Normalization: NFD-decompose, drop combining marks (accents, breathings,
 iota subscript, diaeresis), lowercase, and fold final sigma to sigma. The
 game is played in those 24 bare letters; the accented lemma is kept in
 `display` for showing the answer.
+
+The output records commonness (`rank_pct`) and proper-noun-ness (`is_proper`)
+as separate facts, rather than one precomputed "is this answerable" bit: which
+of them to apply is the player's choice at runtime, not this script's.
 """
 import argparse, bisect, collections, re, sqlite3, sys, unicodedata
 from pathlib import Path
@@ -18,18 +27,17 @@ from pathlib import Path
 ALPHABET = "αβγδεζηθικλμνξοπρστυφχψω"
 GREEK = set(ALPHABET)
 WORD_LEN = 5
-ANSWER_MIN_RANK = 0.5  # answers come from the commoner half of each source
+SCHEMA_VERSION = 2  # rank_pct + is_proper, replacing a single is_answer flag
 
-DEFAULT_SRC = Path.home() / "AndroidStudioProjects/KoineDictionary/app/src/main/assets/pocketGreekEntries.sqlite"
 DEFAULT_OUT = Path(__file__).resolve().parent.parent / "data/words.db"
 
 SCHEMA = """
 CREATE TABLE word (
-  id       INTEGER PRIMARY KEY,
-  word     TEXT    NOT NULL UNIQUE,  -- 5 bare Greek letters, the playable form
-  display  TEXT    NOT NULL,         -- accented lemma, e.g. λόγος
-  rank_pct REAL    NOT NULL,         -- 0..1 commonness, ranked within its source
-  is_answer INTEGER NOT NULL         -- 1 = eligible as a puzzle answer
+  id        INTEGER PRIMARY KEY,
+  word      TEXT    NOT NULL UNIQUE,  -- 5 bare Greek letters, the playable form
+  display   TEXT    NOT NULL,         -- accented lemma, e.g. λόγος
+  rank_pct  REAL    NOT NULL,         -- 0..1 commonness, ranked within its source
+  is_proper INTEGER NOT NULL          -- 1 = proper noun (Ἰησοῦς, Ἰωάννης, ...)
 );
 CREATE TABLE sense (
   id        INTEGER PRIMARY KEY,
@@ -41,7 +49,7 @@ CREATE TABLE sense (
   frequency INTEGER NOT NULL         -- raw count; only comparable within a source
 );
 CREATE INDEX idx_sense_word ON sense(word_id);
-CREATE INDEX idx_word_answer ON word(is_answer);
+CREATE INDEX idx_word_proper ON word(is_proper);
 """
 
 
@@ -63,7 +71,12 @@ def headword(raw: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", type=Path, default=DEFAULT_SRC)
+    ap.add_argument(
+        "--src",
+        type=Path,
+        required=True,
+        help="pocketGreekEntries.sqlite from the Pocket Greek dictionary project",
+    )
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = ap.parse_args()
 
@@ -102,21 +115,19 @@ def main() -> int:
     out = sqlite3.connect(args.out)
     out.executescript(SCHEMA)
 
-    n_answers = 0
+    n_proper = 0
     for form in sorted(senses):
         entries = senses[form]
         # Representative = the sense that ranks highest for commonness.
         best = max(entries, key=lambda e: rank(e[3], e[4]))
         rank_pct = rank(best[3], best[4])
-        # Proper nouns (Ἰησοῦς, Ἰωάννης, ...) stay guessable but never answers.
-        is_answer = int(
-            rank_pct >= ANSWER_MIN_RANK
-            and not any("proper" in e[2].lower() for e in entries)
-        )
-        n_answers += is_answer
+        # A word counts as a proper noun only if every sense of it is one, so a
+        # word that doubles as ordinary vocabulary is not lost with the names.
+        is_proper = int(all("proper" in e[2].lower() for e in entries))
+        n_proper += is_proper
         cur = out.execute(
-            "INSERT INTO word (word, display, rank_pct, is_answer) VALUES (?,?,?,?)",
-            (form, best[0], round(rank_pct, 4), is_answer),
+            "INSERT INTO word (word, display, rank_pct, is_proper) VALUES (?,?,?,?)",
+            (form, best[0], round(rank_pct, 4), is_proper),
         )
         out.executemany(
             "INSERT INTO sense (word_id, display, gloss, pos, source, frequency)"
@@ -124,12 +135,12 @@ def main() -> int:
             [(cur.lastrowid, d, g, p, s, f) for d, g, p, s, f in entries],
         )
 
-    out.execute(f"PRAGMA user_version = 1")
+    out.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     out.commit()
     out.execute("VACUUM")
     out.close()
 
-    print(f"{len(senses)} words ({n_answers} answers) -> {args.out}")
+    print(f"{len(senses)} words ({n_proper} proper nouns) -> {args.out}")
     return 0
 
 

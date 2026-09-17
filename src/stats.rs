@@ -1,7 +1,8 @@
 // Copyright (C) 2026 Barry Brown
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Lifetime statistics, kept in a small text file between runs.
+//! Lifetime statistics and the one setting that outlives a run, kept in a
+//! small text file.
 //!
 //! The file lives at `$XDG_DATA_HOME/greek-wordle/stats` (falling back to
 //! `~/.local/share`) as `key=value` lines, so it is easy to inspect or reset by
@@ -12,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::game::MAX_GUESSES;
+use crate::{game::MAX_GUESSES, words::Pool};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stats {
@@ -26,6 +27,9 @@ pub struct Stats {
     /// Day number of the last daily puzzle recorded, so replaying today's word
     /// after finishing it does not count twice.
     pub last_daily: Option<u64>,
+    /// Which words random games draw answers from. Daily puzzles ignore it so
+    /// everyone shares one word.
+    pub pool: Pool,
 }
 
 impl Stats {
@@ -65,6 +69,9 @@ impl Stats {
                 "streak" => s.streak = num(),
                 "best" => s.best = num(),
                 "last_daily" => s.last_daily = value.parse().ok(),
+                // An unknown pool name falls back to the default rather than
+                // failing, so a hand-edited file cannot wedge the game.
+                "pool" => s.pool = Pool::from_key(value).unwrap_or_default(),
                 "dist" => {
                     for (slot, n) in s.dist.iter_mut().zip(value.split(',')) {
                         *slot = n.trim().parse().unwrap_or(0);
@@ -86,6 +93,7 @@ impl Stats {
             self.best,
             dist.join(",")
         );
+        out.push_str(&format!("pool={}\n", self.pool.key()));
         if let Some(day) = self.last_daily {
             out.push_str(&format!("last_daily={day}\n"));
         }
@@ -161,6 +169,22 @@ mod tests {
         let damaged = Stats::parse("played=seven\nwon=2\ndist=1,x\ngarbage\n");
         assert_eq!((damaged.played, damaged.won), (0, 2));
         assert_eq!(damaged.dist, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(damaged.pool, Pool::default(), "no pool line keeps default");
+    }
+
+    #[test]
+    fn the_chosen_pool_survives_a_restart() {
+        let mut s = Stats {
+            pool: Pool::Common,
+            ..Default::default()
+        };
+        s.record(true, 3, None);
+        assert_eq!(Stats::parse(&s.to_text()).pool, Pool::Common);
+        assert_eq!(
+            Stats::parse("pool=made_up\n").pool,
+            Pool::default(),
+            "an unknown pool name falls back rather than wedging the game"
+        );
     }
 
     #[test]

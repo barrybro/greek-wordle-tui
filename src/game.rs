@@ -172,6 +172,7 @@ impl Game {
 mod tests {
     use super::Mark::*;
     use super::*;
+    use crate::words::Pool;
 
     fn w(s: &str) -> [char; WORD_LEN] {
         s.chars().collect::<Vec<_>>().try_into().unwrap()
@@ -221,7 +222,7 @@ mod tests {
 
     #[test]
     fn rejects_word_not_in_list() {
-        let mut g = Game::new(crate::words::answers().next().unwrap());
+        let mut g = Game::new(crate::words::pool(Pool::All).next().unwrap());
         for c in "ζζζζζ".chars() {
             g.push(c);
         }
@@ -232,7 +233,7 @@ mod tests {
 
     #[test]
     fn winning_and_losing() {
-        let idx = crate::words::answers().next().unwrap();
+        let idx = crate::words::pool(Pool::All).next().unwrap();
         let mut g = Game::new(idx);
         for c in WORDS[idx].word.chars() {
             g.push(c);
@@ -257,7 +258,7 @@ mod tests {
 
     #[test]
     fn input_is_capped_and_ignored_after_game_ends() {
-        let mut g = Game::new(crate::words::answers().next().unwrap());
+        let mut g = Game::new(crate::words::pool(Pool::All).next().unwrap());
         for c in "λογοσλογοσ".chars() {
             g.push(c);
         }
@@ -269,7 +270,7 @@ mod tests {
 
     #[test]
     fn keyboard_never_downgrades_a_correct_letter() {
-        let mut g = Game::new(crate::words::answers().next().unwrap());
+        let mut g = Game::new(crate::words::pool(Pool::All).next().unwrap());
         g.keyboard.insert('λ', Correct);
         g.answer = w("βββββ");
         g.input = "λογοσ".chars().collect();

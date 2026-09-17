@@ -16,8 +16,8 @@ cargo run --release -- --daily # one shared word per day
 ```
 
 Switch your keyboard layout to Greek and type. Six guesses, five letters.
-`Enter` submits, `Backspace` deletes, `Esc` quits, and `Enter` after the last
-row starts a new game.
+`Enter` submits, `Backspace` deletes, `Esc` quits, `F2` chooses which words can
+come up, and `Enter` after the last row starts a new game.
 
 Tiles are always capitalized, whatever you type. Keys that do not produce a
 Greek letter — Latin letters, digits, punctuation — are ignored, so a stray
@@ -59,19 +59,26 @@ finishing it does not change anything.
 
 ## Words
 
-676 five-letter words drawn from the Pocket Greek dictionary; 344 of them are
-common enough to be answers, while all 676 are accepted as guesses. Proper
-nouns are guessable but never the answer. See `data/README.md` for the schema
-and how the answer pool was chosen.
+676 five-letter words drawn from the Pocket Greek dictionary. Every one of them
+can be the answer, because the point is to learn the whole dictionary. `F2`
+narrows that when you want an easier round:
+
+| Pool | Words | |
+|---|---|---|
+| all words | 676 | the default — everything |
+| no proper names | 585 | skips Ἰησοῦς, Ἰωάννης and the rest |
+| common words | 373 | the commoner half of each dictionary source |
+
+The choice is remembered between runs and applies from the next game, so a
+keystroke mid-round never swaps the word you are solving. Narrowing the pool
+never narrows what you may *type*: all 676 stay valid guesses. A `--daily`
+puzzle always draws from every word whatever you have chosen, so the shared
+answer is the same for everyone.
 
 The word list lives in `data/words.db`. `build.rs` reads it at compile time and
 bakes it into the binary, so the game ships as one file with no database to
-install. To change the words, edit or rebuild that database and recompile:
-
-```sh
-python3 tools/build_words.py   # regenerate from the source dictionary
-cargo build --release
-```
+install. The database is committed, and building needs nothing else — see
+`data/README.md` for the schema and how it was extracted.
 
 ## Installing on another machine
 
@@ -126,8 +133,8 @@ set -as terminal-features ",xterm-ghostty:RGB:sync:clipboard,xterm-kitty:RGB:syn
 ```
 build.rs           embeds data/words.db at compile time
 data/words.db      the word list (see data/README.md)
-tools/build_words.py  regenerates words.db from the Koine dictionary
-src/words.rs       word list access and Greek input normalization
+tools/build_words.py  one-off extraction that produced words.db
+src/words.rs       word list access, answer pools, Greek normalization
 src/game.rs        scoring and board state
 src/ui.rs          tile grid, keyboard, status lines, drawn cell by cell
 src/anim.rs        flip, shake, bounce and spark timing

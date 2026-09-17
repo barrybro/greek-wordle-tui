@@ -16,8 +16,69 @@ pub struct Entry {
     /// Accented lemma, shown when the answer is revealed.
     pub display: &'static str,
     pub gloss: &'static str,
-    /// Whether this word may be chosen as an answer (see data/README.md).
-    pub is_answer: bool,
+    /// A proper noun (Ἰησοῦς, Ἰωάννης, ...), which `Pool::NoProperNames` drops.
+    pub is_proper: bool,
+    /// 0..1 commonness, ranked within this word's own dictionary source, so it
+    /// is comparable across sources where the raw frequencies are not.
+    pub rank_pct: f32,
+}
+
+/// How common a word must be to reach `Pool::Common`: the upper half of its
+/// own source, since the two sources count on scales that do not compare.
+const COMMON_MIN_RANK: f32 = 0.5;
+
+/// Which words the game may choose an answer from. Guessing is never
+/// restricted — every word in the dictionary is always accepted as a guess.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Pool {
+    /// Every word in the dictionary. The default, because the point is to
+    /// learn them all.
+    #[default]
+    All,
+    /// Everything except proper nouns, which teach vocabulary least.
+    NoProperNames,
+    /// The commoner half of each source, for an easier round.
+    Common,
+}
+
+impl Pool {
+    /// The order the toggle steps through, widest pool first.
+    pub const CYCLE: [Pool; 3] = [Pool::All, Pool::NoProperNames, Pool::Common];
+
+    pub fn next(self) -> Self {
+        let i = Self::CYCLE.iter().position(|&p| p == self).unwrap_or(0);
+        Self::CYCLE[(i + 1) % Self::CYCLE.len()]
+    }
+
+    /// Shown under the title, so it reads as a phrase: "random word · all words".
+    pub fn label(self) -> &'static str {
+        match self {
+            Pool::All => "all words",
+            Pool::NoProperNames => "no proper names",
+            Pool::Common => "common words",
+        }
+    }
+
+    /// Stable key for the settings file; unknown keys fall back to the default.
+    pub fn key(self) -> &'static str {
+        match self {
+            Pool::All => "all",
+            Pool::NoProperNames => "no_proper_names",
+            Pool::Common => "common",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::CYCLE.into_iter().find(|p| p.key() == key)
+    }
+
+    fn admits(self, e: &Entry) -> bool {
+        match self {
+            Pool::All => true,
+            Pool::NoProperNames => !e.is_proper,
+            Pool::Common => e.rank_pct >= COMMON_MIN_RANK,
+        }
+    }
 }
 
 /// Reduce a typed character to a bare lowercase Greek letter.
@@ -49,8 +110,10 @@ pub fn lookup(word: &str) -> Option<&'static Entry> {
         .map(|i| &WORDS[i])
 }
 
-pub fn answers() -> impl Iterator<Item = usize> {
-    (0..WORDS.len()).filter(|&i| WORDS[i].is_answer)
+/// Indices of the words `pool` may use as an answer. Never empty: `build.rs`
+/// checks at compile time that every pool has words in it.
+pub fn pool(pool: Pool) -> impl Iterator<Item = usize> {
+    (0..WORDS.len()).filter(move |&i| pool.admits(&WORDS[i]))
 }
 
 #[cfg(test)]
@@ -98,6 +161,59 @@ mod tests {
     fn lookup_finds_words() {
         assert!(lookup("λογοσ").is_some());
         assert!(lookup("ζζζζζ").is_none());
-        assert!(answers().count() > 100);
+    }
+
+    #[test]
+    fn every_pool_has_words_and_none_is_wider_than_all() {
+        let all = pool(Pool::All).count();
+        assert_eq!(all, WORDS.len(), "the default pool holds the dictionary");
+        for p in Pool::CYCLE {
+            let n = pool(p).count();
+            assert!(n > 100, "{} has only {n} words", p.label());
+            assert!(n <= all, "{} is wider than all words", p.label());
+        }
+    }
+
+    #[test]
+    fn pools_drop_exactly_what_they_name() {
+        assert!(
+            pool(Pool::NoProperNames).all(|i| !WORDS[i].is_proper),
+            "a proper noun reached the no-proper-names pool"
+        );
+        assert!(
+            pool(Pool::Common).all(|i| WORDS[i].rank_pct >= COMMON_MIN_RANK),
+            "a rare word reached the common pool"
+        );
+        // Proper nouns exist to be dropped, and some are common, so the two
+        // narrower pools are genuinely different rather than one nested set.
+        assert!(WORDS.iter().any(|e| e.is_proper));
+        assert!(
+            WORDS
+                .iter()
+                .any(|e| e.is_proper && e.rank_pct >= COMMON_MIN_RANK)
+        );
+    }
+
+    #[test]
+    fn the_toggle_cycles_through_every_pool_and_returns() {
+        let mut seen = vec![Pool::default()];
+        let mut p = Pool::default();
+        for _ in 0..Pool::CYCLE.len() {
+            p = p.next();
+            seen.push(p);
+        }
+        assert_eq!(p, Pool::default(), "cycling all the way round returns");
+        for expected in Pool::CYCLE {
+            assert!(seen.contains(&expected), "{} unreachable", expected.label());
+        }
+    }
+
+    #[test]
+    fn pool_keys_round_trip_and_junk_is_rejected() {
+        for p in Pool::CYCLE {
+            assert_eq!(Pool::from_key(p.key()), Some(p));
+        }
+        assert_eq!(Pool::from_key("nonsense"), None);
+        assert_eq!(Pool::default(), Pool::All, "the default plays every word");
     }
 }
