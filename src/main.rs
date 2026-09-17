@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Barry Brown
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Greek Wordle for the terminal.
 //!
 //! Switch your keyboard layout to Greek and type. Keys that do not produce a
@@ -28,6 +31,7 @@ use crossterm::{
 use anim::Anim;
 use game::{Game, Status};
 use stats::Stats;
+use words::Pool;
 
 fn main() -> io::Result<()> {
     let daily = std::env::args().any(|a| a == "--daily");
@@ -38,6 +42,9 @@ fn main() -> io::Result<()> {
              OPTIONS:\n    \
              --daily    Everyone gets the same word today, one puzzle per day\n    \
              -h, --help Show this help\n\n\
+             Answers come from every word in the dictionary. F2 narrows them to\n\
+             skip proper names or stick to common words; daily puzzles always\n\
+             use every word so the shared answer is the same for everyone.\n\n\
              Set your keyboard layout to Greek to play. Accents are ignored\n\
              and final sigma counts as sigma."
         );
@@ -62,17 +69,19 @@ fn main() -> io::Result<()> {
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, daily: bool) -> io::Result<()> {
+    // Load before dealing the first word: the saved pool decides what it
+    // comes from.
+    let stats_path = Stats::path();
+    let stats = stats_path.as_deref().map(Stats::load).unwrap_or_default();
     let mut app = App {
-        game: Game::new(pick_answer(daily)),
+        game: Game::new(pick_answer(daily, stats.pool)),
         anim: Anim::new(Instant::now(), clock_nanos()),
-        stats_path: Stats::path(),
-        stats: Stats::default(),
+        stats_path,
+        dealt_from: stats.pool,
+        stats,
         counted_win: None,
         daily,
     };
-    if let Some(path) = &app.stats_path {
-        app.stats = Stats::load(path);
-    }
 
     loop {
         let now = Instant::now();
@@ -86,7 +95,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal, daily: bool) -> io::Result<()> {
                 &app.anim,
                 &app.stats,
                 app.counted_win,
-                daily,
+                Mode {
+                    daily,
+                    pool: app.dealt_from,
+                },
                 now,
             )
         })?;
@@ -125,6 +137,18 @@ struct App {
     /// panel picks out that bar. A replayed daily puzzle is not counted.
     counted_win: Option<usize>,
     daily: bool,
+    /// The pool the word on screen was dealt from. `stats.pool` is the choice
+    /// for the *next* game, so the subtitle tracks this one instead and never
+    /// names a pool the current answer did not come from.
+    dealt_from: Pool,
+}
+
+/// What kind of game is on screen. The subtitle names both halves, and a
+/// daily puzzle ignores `pool` so everyone shares one word.
+#[derive(Clone, Copy)]
+struct Mode {
+    daily: bool,
+    pool: Pool,
 }
 
 enum Action {
@@ -165,6 +189,24 @@ impl App {
             KeyCode::Esc if stats_open => anim.close_stats(),
             KeyCode::Esc => return Action::Quit,
             KeyCode::Tab => anim.toggle_stats(now),
+            // Narrowing the pool takes effect at the next game, so a keystroke
+            // mid-round can never swap the word being solved.
+            KeyCode::F(2) if self.daily => {
+                anim.notify("Daily puzzles always use every word".into(), now)
+            }
+            KeyCode::F(2) => {
+                self.stats.pool = self.stats.pool.next();
+                let label = self.stats.pool.label();
+                anim.notify(
+                    if settled {
+                        format!("{label} — Enter to start")
+                    } else {
+                        format!("{label} — from the next game")
+                    },
+                    now,
+                );
+                Self::save(&self.stats, self.stats_path.as_deref(), anim, now);
+            }
             // Share once the game is decided. The key is the one marked C, which
             // types ψ on a Greek layout.
             KeyCode::Char('c' | 'C' | 'ψ' | 'Ψ') if settled => {
@@ -172,7 +214,8 @@ impl App {
                 return Action::Copy(share::result(game, self.daily.then(days_since_epoch)));
             }
             KeyCode::Enter if settled => {
-                *game = Game::new(pick_answer(self.daily));
+                *game = Game::new(pick_answer(self.daily, self.stats.pool));
+                self.dealt_from = self.stats.pool;
                 anim.new_game(now);
                 self.counted_win = None;
             }
@@ -217,22 +260,33 @@ impl App {
         let guesses = self.game.guesses.len();
         if self.stats.record(won, guesses, day) {
             self.counted_win = won.then_some(guesses);
-            let saved = match &self.stats_path {
-                Some(path) => self.stats.save(path),
-                None => Err(io::Error::other("no home directory")),
-            };
-            if let Err(e) = saved {
-                self.anim.notify(format!("Could not save stats: {e}"), now);
-            }
+            Self::save(&self.stats, self.stats_path.as_deref(), &mut self.anim, now);
         }
         self.anim.open_stats_after_result();
+    }
+
+    /// Persist the stats file, reporting a failure in the status line rather
+    /// than interrupting play. Takes its pieces separately so it can be called
+    /// while the event loop holds a borrow on the animation state.
+    fn save(stats: &Stats, path: Option<&std::path::Path>, anim: &mut Anim, now: Instant) {
+        let saved = match path {
+            Some(path) => stats.save(path),
+            None => Err(io::Error::other("no home directory")),
+        };
+        if let Err(e) = saved {
+            anim.notify(format!("Could not save stats: {e}"), now);
+        }
     }
 }
 
 /// In daily mode the answer is a pure function of the date, so the puzzle is
 /// stable all day and advances at local midnight. Otherwise pick at random.
-fn pick_answer(daily: bool) -> usize {
-    let pool: Vec<usize> = words::answers().collect();
+///
+/// A daily puzzle always draws from every word, whatever the local setting: the
+/// point of the mode is that everyone is solving the one word, and a pool that
+/// varied per player would quietly break that and the share grid with it.
+fn pick_answer(daily: bool, pool: Pool) -> usize {
+    let pool: Vec<usize> = words::pool(if daily { Pool::All } else { pool }).collect();
     let seed = if daily {
         days_since_epoch()
     } else {
@@ -289,22 +343,111 @@ mod tests {
     use super::*;
 
     #[test]
-    fn daily_answer_is_stable_and_valid() {
-        let a = pick_answer(true);
-        assert_eq!(a, pick_answer(true));
-        assert!(words::WORDS[a].is_answer);
-    }
-
-    #[test]
-    fn random_answers_are_answer_eligible() {
-        for _ in 0..50 {
-            assert!(words::WORDS[pick_answer(false)].is_answer);
+    fn daily_answer_is_stable_and_ignores_the_local_pool() {
+        let a = pick_answer(true, Pool::All);
+        assert_eq!(a, pick_answer(true, Pool::All));
+        // However a player has narrowed their own games, the daily word stays
+        // the one everyone else is solving.
+        for p in Pool::CYCLE {
+            assert_eq!(
+                pick_answer(true, p),
+                a,
+                "{} changed the daily word",
+                p.label()
+            );
         }
     }
 
     #[test]
+    fn random_answers_come_from_the_chosen_pool() {
+        for p in Pool::CYCLE {
+            let allowed: std::collections::HashSet<usize> = words::pool(p).collect();
+            for _ in 0..50 {
+                let i = pick_answer(false, p);
+                assert!(
+                    allowed.contains(&i),
+                    "{} admitted {}",
+                    p.label(),
+                    words::WORDS[i].word
+                );
+            }
+        }
+    }
+
+    /// An app with no stats file, so the toggle exercises nothing but itself.
+    fn test_app(daily: bool) -> App {
+        App {
+            game: Game::new(pick_answer(daily, Pool::All)),
+            anim: Anim::new(Instant::now(), 0),
+            stats: Stats::default(),
+            stats_path: None,
+            counted_win: None,
+            daily,
+            dealt_from: Pool::All,
+        }
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle(Event::Key(crossterm::event::KeyEvent::new(
+            code,
+            KeyModifiers::NONE,
+        )));
+    }
+
+    #[test]
+    fn f2_cycles_the_pool_all_the_way_round() {
+        let mut app = test_app(false);
+        assert_eq!(app.stats.pool, Pool::All, "starts on every word");
+        let mut seen = vec![app.stats.pool];
+        for _ in 0..Pool::CYCLE.len() {
+            press(&mut app, KeyCode::F(2));
+            seen.push(app.stats.pool);
+        }
+        assert_eq!(app.stats.pool, Pool::All, "cycles back to where it began");
+        for p in Pool::CYCLE {
+            assert!(seen.contains(&p), "{} never came up", p.label());
+        }
+    }
+
+    #[test]
+    fn f2_leaves_the_pool_alone_in_daily_mode() {
+        let mut app = test_app(true);
+        press(&mut app, KeyCode::F(2));
+        assert_eq!(
+            app.stats.pool,
+            Pool::All,
+            "a daily puzzle has no pool to choose"
+        );
+    }
+
+    #[test]
+    fn changing_the_pool_does_not_disturb_the_game_in_progress() {
+        let mut app = test_app(false);
+        for c in "λογοσ".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        let (answer, typed) = (app.game.entry().word, app.game.input.clone());
+        press(&mut app, KeyCode::F(2));
+        assert_eq!(
+            app.game.entry().word,
+            answer,
+            "the word being solved changed"
+        );
+        assert_eq!(app.game.input, typed, "typed letters were disturbed");
+        assert_ne!(
+            app.stats.pool, app.dealt_from,
+            "the choice is for the next game"
+        );
+        assert_eq!(
+            app.dealt_from,
+            Pool::All,
+            "the subtitle must keep naming where this word came from"
+        );
+    }
+
+    #[test]
     fn mix_spreads_consecutive_days() {
-        let pool = words::answers().count() as u64;
+        let pool = words::pool(Pool::All).count() as u64;
         let picks: std::collections::HashSet<u64> =
             (0..30).map(|d| mix(20000 + d) % pool).collect();
         assert!(picks.len() > 20, "consecutive days should rarely repeat");

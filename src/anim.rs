@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Barry Brown
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Time-based animation layered over the game.
 //!
 //! The rules in `game.rs` settle instantly. Everything here only decides how

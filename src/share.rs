@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Barry Brown
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The spoiler-free result grid, and copying it to the clipboard.
 //!
 //! Copying uses OSC 52, the escape sequence that asks the terminal itself to
@@ -72,7 +75,7 @@ fn civil_date(days: u64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::words::{WORDS, answers};
+    use crate::words::{Pool, WORDS, pool};
 
     #[test]
     fn base64_matches_rfc4648_vectors() {
@@ -100,7 +103,7 @@ mod tests {
 
     #[test]
     fn result_grid_hides_the_letters() {
-        let idx = answers().next().unwrap();
+        let idx = pool(Pool::All).next().unwrap();
         let mut g = Game::new(idx);
         let wrong = WORDS.iter().find(|e| e.word != WORDS[idx].word).unwrap();
         for word in [wrong.word, WORDS[idx].word] {
@@ -120,7 +123,7 @@ mod tests {
 
     #[test]
     fn a_loss_scores_x() {
-        let mut g = Game::new(answers().next().unwrap());
+        let mut g = Game::new(pool(Pool::All).next().unwrap());
         g.status = Status::Lost;
         assert!(result(&g, None).starts_with("Ελληνικό Wordle X/6\n"));
     }

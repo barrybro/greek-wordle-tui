@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Barry Brown
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Bakes `data/words.db` into the binary at compile time.
 //!
 //! The SQLite file stays the canonical word store (rebuild it with
@@ -22,7 +25,7 @@ fn main() {
     // reveal can show both the classical and the New Testament meaning.
     let mut stmt = conn
         .prepare(
-            "SELECT w.word, w.display, w.is_answer,
+            "SELECT w.word, w.display, w.is_proper, w.rank_pct,
                     (SELECT group_concat(g, ' · ') FROM (
                         SELECT DISTINCT s.gloss AS g FROM sense s
                         WHERE s.word_id = w.id ORDER BY s.frequency DESC))
@@ -30,13 +33,14 @@ fn main() {
         )
         .unwrap();
 
-    let rows: Vec<(String, String, bool, String)> = stmt
+    let rows: Vec<(String, String, bool, f32, String)> = stmt
         .query_map([], |r| {
             Ok((
                 r.get(0)?,
                 r.get(1)?,
                 r.get::<_, i64>(2)? != 0,
-                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                r.get::<_, f64>(3)? as f32,
+                r.get::<_, Option<String>>(4)?.unwrap_or_default(),
             ))
         })
         .unwrap()
@@ -44,9 +48,14 @@ fn main() {
         .collect();
 
     assert!(!rows.is_empty(), "word database is empty");
+    // Every pool the game can select must have something in it.
     assert!(
-        rows.iter().any(|r| r.2),
-        "word database has no answer-eligible words"
+        rows.iter().any(|r| !r.2),
+        "word database is nothing but proper nouns"
+    );
+    assert!(
+        rows.iter().any(|r| r.3 >= 0.5),
+        "word database has no common words"
     );
 
     let mut out = String::from(
@@ -54,14 +63,15 @@ fn main() {
          // Included into src/words.rs, which defines Entry.\n\n\
          pub static WORDS: &[Entry] = &[\n",
     );
-    for (word, display, is_answer, gloss) in &rows {
+    for (word, display, is_proper, rank_pct, gloss) in &rows {
         assert_eq!(
             word.chars().count(),
             5,
             "word {word:?} is not five characters"
         );
         out.push_str(&format!(
-            "    Entry {{ word: {word:?}, display: {display:?}, gloss: {gloss:?}, is_answer: {is_answer} }},\n"
+            "    Entry {{ word: {word:?}, display: {display:?}, gloss: {gloss:?}, \
+             is_proper: {is_proper}, rank_pct: {rank_pct:?} }},\n"
         ));
     }
     out.push_str("];\n");
@@ -69,7 +79,7 @@ fn main() {
     let dest = PathBuf::from(env::var("OUT_DIR").unwrap()).join("words_generated.rs");
     fs::write(&dest, out).unwrap();
     println!(
-        "cargo:warning=embedded {} words ({} answers)",
+        "cargo:warning=embedded {} words ({} proper nouns)",
         rows.len(),
         rows.iter().filter(|r| r.2).count()
     );

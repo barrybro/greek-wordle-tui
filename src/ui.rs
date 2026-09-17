@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Barry Brown
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Rendering: the tile grid, the on-screen keyboard, and the status lines.
 //!
 //! Tiles and keys are painted cell by cell rather than with widgets, because
@@ -18,6 +21,7 @@ use ratatui::{
 };
 
 use crate::{
+    Mode,
     anim::{Anim, Flip},
     game::{Game, MAX_GUESSES, Mark, Status, WORD_LEN},
     stats::Stats,
@@ -60,7 +64,7 @@ pub fn draw(
     anim: &Anim,
     stats: &Stats,
     counted_win: Option<usize>,
-    daily: bool,
+    mode: Mode,
     now: Instant,
 ) {
     let area = f.area();
@@ -123,7 +127,7 @@ pub fn draw(
 
     draw_title(f, title, anim, now);
     if subtitle {
-        draw_subtitle(f, sub, daily);
+        draw_subtitle(f, sub, mode);
     }
 
     let board_w = if tall {
@@ -195,18 +199,29 @@ fn draw_title(f: &mut Frame, area: Rect, anim: &Anim, now: Instant) {
     f.render_widget(Paragraph::new(Line::from(spans)).centered(), area);
 }
 
-fn draw_subtitle(f: &mut Frame, area: Rect, daily: bool) {
-    let label = if daily { "daily puzzle" } else { "random word" };
-    let rule = Span::styled("──────", Style::new().fg(FAINT));
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            rule.clone(),
+/// The mode, and for a random word which pool it came from. A daily puzzle
+/// draws from every word by definition, so naming a pool there would be a lie.
+fn draw_subtitle(f: &mut Frame, area: Rect, mode: Mode) {
+    let label = if mode.daily {
+        "daily puzzle".to_string()
+    } else {
+        format!("random word · {}", mode.pool.label())
+    };
+    // The rules are decoration: they shrink to fit and go away entirely
+    // rather than let the label they frame be clipped in a narrow window.
+    let label = truncate(&label, area.width as usize);
+    let width = label.chars().count();
+    let rule = "─".repeat(((area.width as usize).saturating_sub(width + 4) / 2).min(6));
+    let spans = if rule.is_empty() {
+        vec![Span::styled(label, Style::new().fg(DIM))]
+    } else {
+        vec![
+            Span::styled(rule.clone(), Style::new().fg(FAINT)),
             Span::styled(format!("  {label}  "), Style::new().fg(DIM)),
-            rule,
-        ]))
-        .centered(),
-        area,
-    );
+            Span::styled(rule, Style::new().fg(FAINT)),
+        ]
+    };
+    f.render_widget(Paragraph::new(Line::from(spans)).centered(), area);
 }
 
 /// What a single tile is showing this frame.
@@ -699,6 +714,7 @@ fn draw_help(f: &mut Frame, area: Rect, game: &Game, anim: &Anim, now: Instant) 
             ("Enter", "new game"),
             ("C", "share"),
             ("Tab", "stats"),
+            ("F2", "words"),
             ("Esc", "quit"),
         ]
     } else {
@@ -707,6 +723,7 @@ fn draw_help(f: &mut Frame, area: Rect, game: &Game, anim: &Anim, now: Instant) 
             ("Esc", "quit"),
             ("Tab", "stats"),
             ("Bksp", "delete"),
+            ("F2", "words"),
         ]
     };
     f.render_widget(Paragraph::new(hints(keys, area.width)).centered(), area);
@@ -962,6 +979,13 @@ fn draw_sparks(buf: &mut Buffer, anim: &Anim, now: Instant, origin: impl Fn(usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::words::Pool;
+
+    /// A random game over every word: what the screen tests draw.
+    const TEST_MODE: Mode = Mode {
+        daily: false,
+        pool: Pool::All,
+    };
 
     fn rows(buf: &Buffer) -> Vec<String> {
         (0..buf.area.height)
@@ -1035,7 +1059,7 @@ mod tests {
         use crate::words::WORDS;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let idx = crate::words::answers().next().unwrap();
+        let idx = crate::words::pool(Pool::All).next().unwrap();
         let mut game = Game::new(idx);
         let wrong = WORDS.iter().find(|e| e.word != WORDS[idx].word).unwrap();
         for _ in 0..MAX_GUESSES {
@@ -1055,7 +1079,7 @@ mod tests {
 
         for (w, h) in [(80, 40), (MIN_W, MIN_H)] {
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-            term.draw(|f| draw(f, &game, &anim, &Stats::default(), None, false, later))
+            term.draw(|f| draw(f, &game, &anim, &Stats::default(), None, TEST_MODE, later))
                 .unwrap();
             let screen = rows(term.backend().buffer()).join("\n");
             assert!(
@@ -1091,7 +1115,7 @@ mod tests {
 
     /// Win the answer with the longest definition and look at the screen.
     fn won_longest_gloss() -> (Game, Anim, Instant) {
-        let idx = crate::words::answers()
+        let idx = crate::words::pool(Pool::All)
             .max_by_key(|&i| crate::words::WORDS[i].gloss.len())
             .unwrap();
         let mut game = Game::new(idx);
@@ -1106,11 +1130,68 @@ mod tests {
     }
 
     fn screen(game: &Game, anim: &Anim, now: Instant, w: u16, h: u16) -> String {
+        screen_in(TEST_MODE, game, anim, now, w, h)
+    }
+
+    fn screen_in(mode: Mode, game: &Game, anim: &Anim, now: Instant, w: u16, h: u16) -> String {
         use ratatui::{Terminal, backend::TestBackend};
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| draw(f, game, anim, &Stats::default(), None, false, now))
+        term.draw(|f| draw(f, game, anim, &Stats::default(), None, mode, now))
             .unwrap();
         rows(term.backend().buffer()).join("\n")
+    }
+
+    #[test]
+    fn the_subtitle_frames_the_longest_pool_name_evenly_at_any_width() {
+        let (game, anim, now) = won_longest_gloss();
+        for w in [MIN_W, MIN_W + 3, 46, 80] {
+            for pool in Pool::CYCLE {
+                let mode = Mode { daily: false, pool };
+                let screen = screen_in(mode, &game, &anim, now, w, 40);
+                let line = screen
+                    .lines()
+                    .find(|l| l.contains(pool.label()))
+                    .unwrap_or_else(|| panic!("{} missing at {w} wide", pool.label()))
+                    .trim();
+                assert!(
+                    line.chars().count() <= w as usize,
+                    "subtitle overruns {w} columns: [{line}]"
+                );
+                // The rules are decoration; they may vanish, but never leave a
+                // lopsided frame behind.
+                let lead = line.chars().take_while(|&c| c == '─').count();
+                let trail = line.chars().rev().take_while(|&c| c == '─').count();
+                assert_eq!(lead, trail, "lopsided rules at {w} wide: [{line}]");
+            }
+        }
+    }
+
+    #[test]
+    fn the_subtitle_names_the_pool_a_random_word_came_from() {
+        let (game, anim, now) = won_longest_gloss();
+        for pool in Pool::CYCLE {
+            let mode = Mode { daily: false, pool };
+            let screen = screen_in(mode, &game, &anim, now, 80, 40);
+            assert!(
+                screen.contains(pool.label()),
+                "{} is not named on screen",
+                pool.label()
+            );
+        }
+        // A daily puzzle draws from every word, so naming a pool would mislead.
+        let daily = screen_in(
+            Mode {
+                daily: true,
+                pool: Pool::Common,
+            },
+            &game,
+            &anim,
+            now,
+            80,
+            40,
+        );
+        assert!(daily.contains("daily puzzle"));
+        assert!(!daily.contains(Pool::Common.label()));
     }
 
     #[test]
@@ -1169,7 +1250,7 @@ mod tests {
     #[test]
     fn keys_wait_for_their_tile_to_land() {
         let now = Instant::now();
-        let mut game = Game::new(crate::words::answers().next().unwrap());
+        let mut game = Game::new(crate::words::pool(Pool::All).next().unwrap());
         for c in game.entry().word.chars() {
             game.push(c);
         }
