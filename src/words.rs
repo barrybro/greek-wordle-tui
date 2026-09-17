@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Barry Brown
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The word list and Greek input normalization.
 
 use unicode_normalization::UnicodeNormalization;

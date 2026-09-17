@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Barry Brown
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The spoiler-free result grid, and copying it to the clipboard.
 //!
 //! Copying uses OSC 52, the escape sequence that asks the terminal itself to

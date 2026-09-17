@@ -1,7 +1,8 @@
 # words.db
 
 Built by `tools/build_words.py` from the Pocket Greek dictionary
-(`~/Developer/koine_dictionary_android/app/src/main/assets/pocketGreekEntries.sqlite`).
+(`~/AndroidStudioProjects/KoineDictionary/app/src/main/assets/pocketGreekEntries.sqlite`),
+the author's own work and covered by this repository's license.
 Regenerate with `python3 tools/build_words.py`. `PRAGMA user_version` = schema version.
 
 ## Normalization

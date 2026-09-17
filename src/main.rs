@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Barry Brown
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Greek Wordle for the terminal.
 //!
 //! Switch your keyboard layout to Greek and type. Keys that do not produce a

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Barry Brown
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Palette and colour arithmetic.
 //!
 //! Wordle's dark-mode colours plus the few helpers the animations need to blend

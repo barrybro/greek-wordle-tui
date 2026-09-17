@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Barry Brown
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Game rules: scoring a guess and tracking board state.
 
 use std::collections::HashMap;

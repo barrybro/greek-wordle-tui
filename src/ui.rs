@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Barry Brown
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Rendering: the tile grid, the on-screen keyboard, and the status lines.
 //!
 //! Tiles and keys are painted cell by cell rather than with widgets, because

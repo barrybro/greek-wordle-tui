@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Barry Brown
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Bakes `data/words.db` into the binary at compile time.
 //!
 //! The SQLite file stays the canonical word store (rebuild it with

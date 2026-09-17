@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Barry Brown
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Extract 5-letter Greek words from the Pocket Greek dictionary into words.db.
 
-Source : koine_dictionary_android/app/src/main/assets/pocketGreekEntries.sqlite
+Source : KoineDictionary/app/src/main/assets/pocketGreekEntries.sqlite
 Output : data/words.db
 
 Normalization: NFD-decompose, drop combining marks (accents, breathings,
@@ -17,7 +20,7 @@ GREEK = set(ALPHABET)
 WORD_LEN = 5
 ANSWER_MIN_RANK = 0.5  # answers come from the commoner half of each source
 
-DEFAULT_SRC = Path.home() / "Developer/koine_dictionary_android/app/src/main/assets/pocketGreekEntries.sqlite"
+DEFAULT_SRC = Path.home() / "AndroidStudioProjects/KoineDictionary/app/src/main/assets/pocketGreekEntries.sqlite"
 DEFAULT_OUT = Path(__file__).resolve().parent.parent / "data/words.db"
 
 SCHEMA = """

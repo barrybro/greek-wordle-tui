@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Barry Brown
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Lifetime statistics, kept in a small text file between runs.
 //!
 //! The file lives at `$XDG_DATA_HOME/greek-wordle/stats` (falling back to

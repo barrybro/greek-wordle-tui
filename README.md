@@ -140,3 +140,15 @@ src/main.rs        terminal setup, event loop, answer selection
 `cargo test` covers the scoring rules (including repeated letters, where
 Wordle's two-pass rule is easy to get wrong), the input normalization, and the
 integrity of the embedded word list.
+
+## License
+
+GNU General Public License v3.0 or later — see [LICENSE](LICENSE). Anyone may
+run, study, change and redistribute this, including as part of something they
+sell; what the GPL asks in return is that any version they distribute comes
+with its source under these same terms. The game stays open, and so does every
+fork of it.
+
+This covers the word list too. `data/words.db` is derived from the Pocket
+Greek dictionary, which is also the author's own work, so the dictionary
+content ships under these same terms.
