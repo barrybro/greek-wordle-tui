@@ -17,7 +17,7 @@ pub enum Mark {
 impl Mark {
     /// Ranking used to keep the best result a letter has ever earned on the
     /// on-screen keyboard: a green key must never fall back to yellow.
-    fn rank(self) -> u8 {
+    pub fn rank(self) -> u8 {
         match self {
             Mark::Absent => 0,
             Mark::Present => 1,

@@ -4,18 +4,30 @@
 //! Greek letter are ignored, accents are stripped, and every tile is shown
 //! capitalized.
 
+mod anim;
 mod game;
+mod share;
+mod stats;
+mod theme;
 mod ui;
 mod words;
 
 use std::{
-    io,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    io::{self, Write},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::{
+    event::{
+        self, DisableFocusChange, EnableFocusChange, Event, KeyCode, KeyEventKind, KeyModifiers,
+    },
+    execute,
+    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
+};
 
-use game::Game;
+use anim::Anim;
+use game::{Game, Status};
+use stats::Stats;
 
 fn main() -> io::Result<()> {
     let daily = std::env::args().any(|a| a == "--daily");
@@ -33,53 +45,187 @@ fn main() -> io::Result<()> {
     }
 
     let mut terminal = ratatui::init();
+    // Focus reports let the pulsing caret rest while the window is in the
+    // background. ratatui's panic hook restores the terminal; ours runs first to
+    // undo what ratatui does not know about.
+    execute!(io::stdout(), EnableFocusChange)?;
+    let restore = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(io::stdout(), EndSynchronizedUpdate, DisableFocusChange);
+        restore(info);
+    }));
+
     let result = run(&mut terminal, daily);
+    let _ = execute!(io::stdout(), DisableFocusChange);
     ratatui::restore();
     result
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, daily: bool) -> io::Result<()> {
-    let mut game = Game::new(pick_answer(daily));
+    let mut app = App {
+        game: Game::new(pick_answer(daily)),
+        anim: Anim::new(Instant::now(), clock_nanos()),
+        stats_path: Stats::path(),
+        stats: Stats::default(),
+        counted_win: None,
+        daily,
+    };
+    if let Some(path) = &app.stats_path {
+        app.stats = Stats::load(path);
+    }
 
     loop {
-        terminal.draw(|f| ui::draw(f, &game))?;
+        let now = Instant::now();
+        // Synchronized output: the terminal presents each frame whole, so a
+        // tile turning over at 60 fps never tears halfway down the board.
+        execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+        terminal.draw(|f| {
+            ui::draw(
+                f,
+                &app.game,
+                &app.anim,
+                &app.stats,
+                app.counted_win,
+                daily,
+                now,
+            )
+        })?;
+        execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
 
-        // Poll so a resize repaints promptly without spinning the CPU.
-        if !event::poll(Duration::from_millis(250))? {
+        // Sleep until the next animation frame is due, or much longer when
+        // nothing is moving. A resize or keypress wakes us either way.
+        if !event::poll(app.anim.frame(now))? {
             continue;
         }
-        let Event::Key(key) = event::read()? else {
-            continue;
+        // Drain everything queued so fast typing lands in a single frame.
+        loop {
+            match app.handle(event::read()?) {
+                Action::Quit => return Ok(()),
+                Action::Copy(text) => {
+                    let out = terminal.backend_mut();
+                    out.write_all(share::osc52(&text).as_bytes())?;
+                    out.flush()?;
+                }
+                Action::None => {}
+            }
+            if !event::poll(Duration::ZERO)? {
+                break;
+            }
+        }
+    }
+}
+
+struct App {
+    game: Game,
+    anim: Anim,
+    stats: Stats,
+    /// Where stats persist; `None` when there is no home directory to use.
+    stats_path: Option<std::path::PathBuf>,
+    /// Guesses taken by the game just won, if it went into the stats; the
+    /// panel picks out that bar. A replayed daily puzzle is not counted.
+    counted_win: Option<usize>,
+    daily: bool,
+}
+
+enum Action {
+    None,
+    Quit,
+    /// Put this text on the system clipboard.
+    Copy(String),
+}
+
+impl App {
+    /// Apply one terminal event.
+    fn handle(&mut self, event: Event) -> Action {
+        let now = Instant::now();
+        let (game, anim) = (&mut self.game, &mut self.anim);
+        let key = match event {
+            Event::FocusGained | Event::FocusLost => {
+                anim.focus(event == Event::FocusGained, now);
+                return Action::None;
+            }
+            Event::Key(key) => key,
+            _ => return Action::None,
         };
         // Kitty's enhanced protocol also reports key releases; act on presses only.
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-            continue;
+            return Action::None;
         }
+        anim.input(now);
 
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
         {
-            return Ok(());
+            return Action::Quit;
         }
 
+        let settled = game.is_over() && !anim.busy(now);
+        let stats_open = anim.stats_open(now);
         match key.code {
-            KeyCode::Esc => return Ok(()),
-            KeyCode::Backspace => game.backspace(),
+            KeyCode::Esc if stats_open => anim.close_stats(),
+            KeyCode::Esc => return Action::Quit,
+            KeyCode::Tab => anim.toggle_stats(now),
+            // Share once the game is decided. The key is the one marked C, which
+            // types ψ on a Greek layout.
+            KeyCode::Char('c' | 'C' | 'ψ' | 'Ψ') if settled => {
+                anim.notify("Result copied to clipboard".into(), now);
+                return Action::Copy(share::result(game, self.daily.then(days_since_epoch)));
+            }
+            KeyCode::Enter if settled => {
+                *game = Game::new(pick_answer(self.daily));
+                anim.new_game(now);
+                self.counted_win = None;
+            }
+            // The stats panel takes no other keys, and nothing else is taken
+            // while tiles are still turning over.
+            _ if stats_open || anim.busy(now) => {}
+            KeyCode::Backspace => {
+                game.backspace();
+                anim.erased(game.input.len());
+            }
             KeyCode::Enter => {
-                if game.is_over() {
-                    game = Game::new(pick_answer(daily));
-                } else {
-                    game.submit();
+                let row = game.guesses.len();
+                game.submit();
+                if game.guesses.len() > row {
+                    anim.reveal(row, game.status == Status::Won, now);
+                    if game.is_over() {
+                        self.finish(now);
+                    }
+                } else if let Some(msg) = game.message.take() {
+                    anim.reject(msg, now);
                 }
             }
             // Anything that is not a Greek letter is silently ignored.
             KeyCode::Char(c) => {
                 if let Some(letter) = words::normalize_char(c) {
+                    let col = game.input.len();
                     game.push(letter);
+                    if game.input.len() > col {
+                        anim.typed(col, letter, now);
+                    }
                 }
             }
             _ => {}
         }
+        Action::None
+    }
+
+    /// Record a finished game and queue the stats panel to follow the reveal.
+    fn finish(&mut self, now: Instant) {
+        let won = self.game.status == Status::Won;
+        let day = self.daily.then(days_since_epoch);
+        let guesses = self.game.guesses.len();
+        if self.stats.record(won, guesses, day) {
+            self.counted_win = won.then_some(guesses);
+            let saved = match &self.stats_path {
+                Some(path) => self.stats.save(path),
+                None => Err(io::Error::other("no home directory")),
+            };
+            if let Err(e) = saved {
+                self.anim.notify(format!("Could not save stats: {e}"), now);
+            }
+        }
+        self.anim.open_stats_after_result();
     }
 }
 
@@ -90,12 +236,16 @@ fn pick_answer(daily: bool) -> usize {
     let seed = if daily {
         days_since_epoch()
     } else {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0)
+        clock_nanos()
     };
     pool[(mix(seed) % pool.len() as u64) as usize]
+}
+
+fn clock_nanos() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
 }
 
 fn days_since_epoch() -> u64 {
