@@ -90,15 +90,30 @@ pub fn draw(
     let keycaps = tall && spare >= 1 + KEYCAP_H;
     let keyboard_h = if keycaps { 6 } else { 3 };
 
+    // A finished game's definition wraps. Its second line takes the empty row
+    // under the message, so nothing moves; any further lines push the keyboard
+    // down into spare rows at the bottom. The board stays put either way,
+    // because the top margin is fixed from the layout without them.
+    let base_h = board_h + CHROME_H + u16::from(subtitle) + keyboard_h - 3;
+    let top = (area.height - base_h) / 2;
+    let bottom = area.height - base_h - top;
+    let gloss_lines = if game.is_over() && !anim.busy(now) {
+        wrap(game.entry().gloss, gloss_width(area.width)).len() as u16
+    } else {
+        0
+    };
+    let pushed = gloss_lines.saturating_sub(2).min(bottom);
+    let gap_used = u16::from(gloss_lines >= 2);
+
     let [_, title, sub, _, board, _, message, _, keyboard, _, help, _] = Layout::vertical([
-        Constraint::Fill(1),
+        Constraint::Length(top),
         Constraint::Length(1),
         Constraint::Length(subtitle as u16),
         Constraint::Length(1),
         Constraint::Length(board_h),
         Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Length(1),
+        Constraint::Length(2 + gap_used + pushed),
+        Constraint::Length(1 - gap_used),
         Constraint::Length(keyboard_h),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -570,37 +585,7 @@ fn draw_message(f: &mut Frame, area: Rect, game: &Game, anim: &Anim, now: Instan
     let lines: Vec<Line> = if let Some(msg) = anim.toast(now) {
         vec![Line::from(pill(msg, TOAST, INK).to_vec())]
     } else if game.is_over() && !anim.busy(now) {
-        let entry = game.entry();
-        let mut first: Vec<Span> = if game.status == Status::Won {
-            let verdict = match game.guesses.len() {
-                1 => "Θαυμάσιο!",
-                2 => "Έξοχο!",
-                3 => "Πολύ καλά!",
-                4 => "Ωραία!",
-                5 => "Καλά!",
-                _ => "Μόλις που τα κατάφερες!",
-            };
-            let mut s = pill(verdict, CORRECT, TEXT).to_vec();
-            s.push(Span::raw("  "));
-            s.push(Span::styled(
-                entry.display,
-                Style::new().fg(TEXT).add_modifier(Modifier::BOLD),
-            ));
-            s
-        } else {
-            vec![Span::styled("Η λέξη ήταν  ", Style::new().fg(DIM))]
-        };
-        if game.status == Status::Lost {
-            first.extend(pill(entry.display, PRESENT, INK));
-        }
-        let room = area.width.saturating_sub(4) as usize;
-        vec![
-            Line::from(first),
-            Line::from(Span::styled(
-                truncate(entry.gloss, room.min(60)),
-                Style::new().fg(DIM),
-            )),
-        ]
+        result_lines(game, gloss_width(area.width), area.height - 1)
     } else if !game.is_over() && game.guesses.is_empty() && game.input.is_empty() {
         // Nothing typed yet: remind the player where the letters come from.
         vec![Line::from(Span::styled(
@@ -611,6 +596,92 @@ fn draw_message(f: &mut Frame, area: Rect, game: &Game, anim: &Anim, now: Instan
         vec![]
     };
     f.render_widget(Paragraph::new(lines).centered(), area);
+}
+
+/// The verdict and answer, then its definition wrapped to `width` in at most
+/// `rows` lines. Shown under the board and again at the top of the stats panel
+/// so the panel never hides the answer.
+fn result_lines(game: &Game, width: u16, rows: u16) -> Vec<Line<'static>> {
+    let entry = game.entry();
+    let first: Vec<Span> = if game.status == Status::Won {
+        let verdict = match game.guesses.len() {
+            1 => "Θαυμάσιο!",
+            2 => "Έξοχο!",
+            3 => "Πολύ καλά!",
+            4 => "Ωραία!",
+            5 => "Καλά!",
+            _ => "Μόλις που τα κατάφερες!",
+        };
+        let mut s = pill(verdict, CORRECT, TEXT).to_vec();
+        s.push(Span::raw("  "));
+        s.push(Span::styled(
+            entry.display,
+            Style::new().fg(TEXT).add_modifier(Modifier::BOLD),
+        ));
+        s
+    } else {
+        let mut s = vec![Span::styled("Η λέξη ήταν  ", Style::new().fg(DIM))];
+        s.extend(pill(entry.display, PRESENT, INK));
+        s
+    };
+    let mut lines = vec![Line::from(first)];
+    lines.extend(
+        fit(wrap(entry.gloss, width), rows as usize, width)
+            .into_iter()
+            .map(|l| Line::from(Span::styled(l, Style::new().fg(DIM)))),
+    );
+    lines
+}
+
+/// Definitions under the board wrap at a comfortable reading width.
+fn gloss_width(screen: u16) -> u16 {
+    screen.saturating_sub(4).min(60)
+}
+
+/// Word-wrap `text` to lines of at most `width` characters. A sense separator
+/// `·` stays on the end of a line rather than starting the next one, and a
+/// word too long for a line is split.
+fn wrap(text: &str, width: u16) -> Vec<String> {
+    let width = width.max(1) as usize;
+    let mut words: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match words.last_mut() {
+            Some(prev) if word == "·" => prev.push_str(" ·"),
+            _ => words.push(word.to_string()),
+        }
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in words {
+        let fits = line.chars().count() + 1 + word.chars().count() <= width;
+        if !line.is_empty() && !fits {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(&word);
+        while line.chars().count() > width {
+            let rest: String = line.chars().skip(width).collect();
+            lines.push(line.chars().take(width).collect());
+            line = rest;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// Keep at most `rows` wrapped lines; when some are cut, the last line kept is
+/// refilled with the remaining text and ends in an ellipsis.
+fn fit(mut lines: Vec<String>, rows: usize, width: u16) -> Vec<String> {
+    if lines.len() > rows && rows > 0 {
+        let rest = lines.split_off(rows - 1).join(" ");
+        lines.push(truncate(&rest, width as usize));
+    }
+    lines.truncate(rows);
+    lines
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -682,7 +753,31 @@ fn draw_stats(
     now: Instant,
 ) {
     let w = STATS_W.min(area.width.saturating_sub(2));
-    let h = STATS_H.min(area.height);
+    let result = game.is_over() && !anim.busy(now);
+    // Inner width, inside the border and a two-column margin each side.
+    let text_w = w.saturating_sub(6);
+    let wanted = if result {
+        wrap(game.entry().gloss, text_w).len() as u16
+    } else {
+        0
+    };
+    // Grow the panel to fit the whole definition. When the window is too short,
+    // give up the spacer under the answer, then the one above it, and only
+    // then shorten the definition, never below two lines.
+    let (mut gloss, mut gap_after, mut top_gap) = (wanted, u16::from(result), 1);
+    let height = |g: u16, a: u16, t: u16| STATS_H - 1 + t + u16::from(result) * (1 + g) + a;
+    while height(gloss, gap_after, top_gap) > area.height {
+        if gap_after > 0 {
+            gap_after = 0;
+        } else if top_gap > 0 {
+            top_gap = 0;
+        } else if gloss > 2 {
+            gloss -= 1;
+        } else {
+            break;
+        }
+    }
+    let h = height(gloss, gap_after, top_gap).min(area.height);
     let panel = Rect {
         x: area.x + (area.width - w) / 2,
         y: area.y + (area.height - h) / 2,
@@ -709,8 +804,10 @@ fn draw_stats(
         ..inner
     };
 
-    let [_, numbers, labels, _, heading, bars, _, footer] = Layout::vertical([
-        Constraint::Length(1),
+    let [_, answer, _, numbers, labels, _, heading, bars, _, footer] = Layout::vertical([
+        Constraint::Length(top_gap),
+        Constraint::Length(if result { 1 + gloss } else { 0 }),
+        Constraint::Length(gap_after),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -720,6 +817,13 @@ fn draw_stats(
         Constraint::Length(1),
     ])
     .areas(inner);
+
+    if result {
+        f.render_widget(
+            Paragraph::new(result_lines(game, text_w, gloss)).centered(),
+            answer,
+        );
+    }
 
     let grow = anim.stats_grow(0, now);
     let headline = [
@@ -924,6 +1028,142 @@ mod tests {
         );
         assert_eq!(buf[(3, 0)].bg, BAR);
         assert_eq!(buf[(4, 0)].bg, Color::Reset);
+    }
+
+    #[test]
+    fn the_stats_panel_never_hides_a_lost_answer() {
+        use crate::words::WORDS;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let idx = crate::words::answers().next().unwrap();
+        let mut game = Game::new(idx);
+        let wrong = WORDS.iter().find(|e| e.word != WORDS[idx].word).unwrap();
+        for _ in 0..MAX_GUESSES {
+            for c in wrong.word.chars() {
+                game.push(c);
+            }
+            game.submit();
+        }
+        assert_eq!(game.status, Status::Lost);
+
+        let t0 = Instant::now();
+        let mut anim = Anim::new(t0, 1);
+        anim.reveal(MAX_GUESSES - 1, false, t0);
+        anim.open_stats_after_result();
+        let later = t0 + std::time::Duration::from_secs(10);
+        assert!(anim.stats_open(later));
+
+        for (w, h) in [(80, 40), (MIN_W, MIN_H)] {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| draw(f, &game, &anim, &Stats::default(), None, false, later))
+                .unwrap();
+            let screen = rows(term.backend().buffer()).join("\n");
+            assert!(
+                screen.contains(game.entry().display),
+                "answer hidden at {w}x{h}:\n{screen}"
+            );
+            assert!(screen.contains("Statistics") && screen.contains("Played"));
+            assert!(
+                screen.contains("new game"),
+                "panel footer clipped at {w}x{h}"
+            );
+        }
+    }
+
+    #[test]
+    fn definitions_wrap_between_words_and_keep_separators_on_the_line() {
+        assert_eq!(wrap("to be strong, able", 60), ["to be strong, able"]);
+        assert_eq!(
+            wrap("think, suppose · to think; seem", 16),
+            ["think, suppose ·", "to think; seem"]
+        );
+        assert_eq!(wrap("a verylongword", 5), ["a", "veryl", "ongwo", "rd"]);
+        assert!(wrap("", 10).is_empty());
+    }
+
+    #[test]
+    fn fitting_cuts_the_last_line_with_an_ellipsis() {
+        let lines = wrap("one two three four five six seven", 9);
+        assert_eq!(lines, ["one two", "three", "four five", "six seven"]);
+        assert_eq!(fit(lines.clone(), 9, 9), lines, "room for all");
+        assert_eq!(fit(lines, 2, 9), ["one two", "three fo…"]);
+    }
+
+    /// Win the answer with the longest definition and look at the screen.
+    fn won_longest_gloss() -> (Game, Anim, Instant) {
+        let idx = crate::words::answers()
+            .max_by_key(|&i| crate::words::WORDS[i].gloss.len())
+            .unwrap();
+        let mut game = Game::new(idx);
+        for c in game.entry().word.chars() {
+            game.push(c);
+        }
+        game.submit();
+        let t0 = Instant::now();
+        let mut anim = Anim::new(t0, 1);
+        anim.reveal(0, true, t0);
+        (game, anim, t0 + std::time::Duration::from_secs(3))
+    }
+
+    fn screen(game: &Game, anim: &Anim, now: Instant, w: u16, h: u16) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| draw(f, game, anim, &Stats::default(), None, false, now))
+            .unwrap();
+        rows(term.backend().buffer()).join("\n")
+    }
+
+    #[test]
+    fn a_long_definition_fits_under_the_board_or_shows_two_lines() {
+        let (game, anim, now) = won_longest_gloss();
+        let gloss = game.entry().gloss;
+        assert!(gloss.len() > 120, "picked a genuinely long definition");
+
+        let roomy = screen(&game, &anim, now, 100, 40);
+        for line in wrap(gloss, gloss_width(100)) {
+            assert!(roomy.contains(&line), "missing {line:?} in\n{roomy}");
+        }
+        assert!(!roomy.contains('…'));
+
+        let tight = screen(&game, &anim, now, MIN_W, MIN_H);
+        let lines = wrap(gloss, gloss_width(MIN_W));
+        assert!(tight.contains(&lines[0]), "first line in\n{tight}");
+        let second: String = lines[1]
+            .chars()
+            .take(gloss_width(MIN_W) as usize - 1)
+            .collect();
+        assert!(tight.contains(&second), "second line in\n{tight}");
+    }
+
+    #[test]
+    fn the_board_does_not_move_when_a_definition_appears() {
+        let (game, _, now) = won_longest_gloss();
+        let t0 = now - std::time::Duration::from_secs(3);
+        let mut busy = Anim::new(t0, 1);
+        busy.reveal(0, true, now - std::time::Duration::from_millis(200));
+        let settled = Anim::new(t0, 1);
+        for (w, h) in [(100, 40), (80, 24), (MIN_W, MIN_H)] {
+            let during = screen(&game, &busy, now, w, h);
+            let after = screen(&game, &settled, now, w, h);
+            let title = |s: &str| s.lines().position(|l| l.contains("W O R D L E"));
+            assert_eq!(title(&during), title(&after), "shifted at {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn the_stats_panel_shows_a_long_definition() {
+        let (game, mut anim, now) = won_longest_gloss();
+        anim.open_stats_after_result();
+        let later = now + std::time::Duration::from_secs(10);
+        let roomy = screen(&game, &anim, later, 100, 40);
+        let text_w = STATS_W - 6;
+        for line in wrap(game.entry().gloss, text_w) {
+            assert!(roomy.contains(&line), "missing {line:?} in\n{roomy}");
+        }
+        let tight = screen(&game, &anim, later, MIN_W, MIN_H);
+        let lines = wrap(game.entry().gloss, MIN_W - 2 - 6);
+        assert!(tight.contains(&lines[0]), "first line in\n{tight}");
+        assert!(tight.contains("Played") && tight.contains("new game"));
     }
 
     #[test]

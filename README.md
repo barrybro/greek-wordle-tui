@@ -36,7 +36,8 @@ the keys sit where your fingers expect them.
 
 `Tab` opens your statistics at any time: games played, win percentage, current
 and best streak, and how many guesses your wins took. The panel also opens by
-itself shortly after each game ends; `Tab` or `Esc` closes it.
+itself shortly after each game ends, with the answer and its meaning at the
+top so it never hides the word you were looking for; `Tab` or `Esc` closes it.
 
 Once a game is over, `C` copies the result to the clipboard as Wordle players
 share it — a header and a grid of coloured squares, never the letters. On a
